@@ -1,0 +1,235 @@
+
+1、结合dubbo搭建restful
+2、+基于oAuth2的token验证，实现用户中心的设计
+3、实现springboot与dubbo的融合
+4、加缓存redis,并解决分布式一致性问题
+5、CICD
+6、服务部署、运维监控
+7、docker部署
+
+
+
+服务器统一Host
+vim /etc/hosts
+
+
+Dubbox下载地址：
+https://github.com/dangdangdotcom/dubbox
+
+安装dubbox到私服：
+1.进入dubbox目录执行： mvn install -Dmaven.test.skip=true
+2.修改pom.xml:
+	<distributionManagement>
+		<repositoryy>
+			<id>nexus-releases</id>
+			<url>http://10.211.55.19:8081/repository/maven-releases</<url>
+		<repository>
+	</distributionManagement>
+	
+	这里的id要和maven中setting.xml中的<server>下的id一样
+3.设置maven私服：
+	设置->Repositories->maven-releases->Hosted中设置为Allow redeploy
+4.进入dubbox目录下，执行上传： mvn depoly -Dmaven.test.skip=true  
+5.登录私服查看验证
+
+
+安装dubbo管控台：
+	在dubbox/dubbo-admin/target中有2.8.4.war
+	将war上传到tomcat/webapp 
+	mv dubbo-admin-2.8.4.war ROOT.war
+	启动Tomcat ，ROOT.war会自动解压
+	cd /ROOT/WEB-INF 
+	配置dubbo.properties
+		dubbo.registry.address=zookeeper://10.211.55.13:2181?backup=10.211.55.14:2181,10.211.55.15:2181
+		dubbo.admin.root.password=root
+		dubbo.admin.guest.password=guest
+	重启tomcat
+	登录10.211.55.13:8080 （可以取改一下tomcat端口号比如9001）  用户名/密码 root/root 
+
+
+安装Dubbo监控台：
+
+	在dubbox/dubbo-simple下dubbo-monotor-simple-2.8.4-assembly.tar.gz
+	1.上传到目录并解压
+	2.进入到conf文件修改dubbo.properties
+		dubbo.container=log4j,spring,registry,jetty  
+		dubbo.application.name=simple-monitor  
+		dubbo.application.owner=  
+		#dubbo.registry.address=127.0.0.1:2181,127.0.0.1:2182,127.0.0.1:2183  
+		dubbo.registry.address=zookeeper://127.0.0.1:2181?backup=127.0.0.1:2182,127.0.0.1:2183  
+		#dubbo.registry.address=zookeeper://127.0.0.1:2181  
+		#dubbo.registry.address=redis://127.0.0.1:6379  
+		#dubbo.registry.address=dubbo://127.0.0.1:9090  
+		dubbo.protocol.port=7070  
+		dubbo.jetty.port=8086  
+		dubbo.jetty.directory=${user.home}/monitor  
+		dubbo.charts.directory=${dubbo.jetty.directory}/charts  
+		dubbo.statistics.directory=${user.home}/monitor/statistics  
+		dubbo.log4j.file=logs/dubbo-monitor-simple.log  
+		dubbo.log4j.level=WARN  
+	3.切换到bin文件夹，执行start.sh命令
+	4.http://localhost:8086/index.html
+
+
+工程dubbo化：提供和消费端：
+	<denpendency>
+		<groupId>com.alibaba</groupId>
+		<artifactId>dubbo</artifactId>
+		<version>2.8.4<version>
+	</denpendency>
+
+	spring配置文件
+	resource中新建目录：META-INF/spring (这样就不需要做其他配置了)
+	spring.xml和spring-dubbo.xml文件放在这里面
+
+	
+
+
+Dubbo启动时检查、集群容错、负载均衡、线程模型的设置以及选择
+
+	Dubbo缺省会在服务启动时检查依赖的服务是否可用，不可用时会抛出异常，组织Spring初始化完成，以便上线时及早发现问题
+	默认 check =true，开发时可以改为false（如果配置的是dubbo.proprities ，设置dubbo.reference.check=false 会覆盖所有的检查）
+
+	集群容错：
+	failover  cluster="failover" retries="2" 。      读操作
+	failfast  快速失败 直发器一次调用，失败立即报错。      非幂等性写，例如新增
+	failsafe  失败安全，出现异常时，直接忽略。            写入日志等非关键性任务操作
+	failback 失败自动恢复，后台记录失败请求，定时重发。     MQ等消息通知操作
+	forking   并行调用多个服务，只要有一个成功即返回。     实时性要求高的读操作，但浪费服务资源，设置forks="2" 最大并行数
+	broadcast 广播调用所有提供者，逐个调用，任意一台报错，则报错。      通知所有提供者更新缓存或日志等本地资源信息
+
+	负载均衡：缺省为random   
+	Random 随机，按权重选择。
+	RoundRobin 轮训，按公约后的权重轮训，存在慢节点等待问题
+	LeastActive 最少活跃调用数
+	ConsistentHash 一致性哈希，参数相同的请求，发送给同意提供者（如果做虚拟节点，会平摊到提供者，不会引起剧烈变动）
+
+	线程模型：（provider中）
+	如果事件处理逻辑能够迅速完成，并且不会发起新的IO请求，比如只是在内存中记个标识，则直接在IO线程上处理更快，因为减少了线程池调度，但如果时间处理逻辑较慢，或者需要发起新的IO请求，比如需要查询数据库，则必须派发到线程池，否则IO线程阻塞，将导致不能接受其他请求。
+	disparcher 
+		all 所有消息都派发到线程池，包括请求、响应、连接事件、断开事件、心跳等
+		direct 所有消息都不发送到线程池，全部在IO线程上直接执行
+		message 只有请求相应消息派发到线程池，其他连接事件、断开、心跳等，直接在IO线程上执行
+		execution 只请求消息发送到线程池。
+		connection 在IO线程上，将连接断开事件放入队列，有序逐个执行，其他消息发派发到线程池。
+	threadpool 
+		fixed固定大小，启动时建立，不关闭，一直持有，默认  
+		cached 缓存线程池，空闲一分钟，需要时重建
+		limited 可伸缩，但数量只增不减，是为了避免大流量引起的性能问题
+
+
+
+	配置直连：
+	开发测试环境下，需要跳过注册中心，只测试指定的服务提供者，这时候可能需要点对点直连，将以服务接口为单位，忽略注册中心，A接口配置点对点，不会影响B接口从注册中心获取列表
+	如果线上需要点对点，在<dubbo:reference>中配置url指向提供者，将绕过注册中心，多个地址用,隔开
+
+	只订阅(提供者, 为开发方便，经常会在线下公用一个所有服务可用的注册中心，这是，如果一个正在开发中的服务提供注册，可能会影响消费者不能正常运行，可以让服务提供者开发方，只订阅服务（开发的服务可能依赖其他服务），而不注册正在开发的服务，通过直连测试正在开发的服务)
+	<dubbo:registry address="10.211.55.13" register="false">
+
+
+	只注册（提供者）
+	如果有两个镜像环境，两个注册中心，有一个服务只在其中一个注册中心中部署，另一个注册中心还没来得及部署，而两个注册中心的其他应用都需要依赖此服务，这时候，可以让服务提供者方只注册服务到另一注册中心，而不从另一注册中心订阅服务
+	<dubbo:registry id ="1" address="10.211.55.13">
+	<dubbo:registry id ="2" address="10.211.55.14" subscribe="false" >
+
+
+dubbo协议选择：
+	dubbo://
+	Dubbo缺省协议采用单一长连接和NIO异步通讯，适合于小数据量大并发的服务调用，以及服务消费者机器数远大于服务提供者机器数的情况
+	DUbbo缺省协议不合适传送大数据量的服务，比如传文件，传视频，除非请求量很低。
+	<dubbo:protocol name="dubbo" port="20844" />
+	连接个数：单链接
+	链接方式：长连接
+	传输协议：TCP
+	传输方式：NIO异步传输
+	序列化：Hessian二进制序列化
+	使用范围：传入传出数据包比较小（建议小于100k），消费者比提供者多，单一消费无法压测提供者，尽量不要用dubbo协议传输大文件或超大字符串
+	使用场景：常规远程服务方法调用。
+
+	rmi://
+	RMI协议采用JDK标准的java.rmi.*实现，采用阻塞式短连接和JDK标准序列化
+	<dubbo:protocol name="rmi" port="1099" />
+	连接个数：多链接
+	链接方式：端连接
+	传输协议：TCP
+	传输方式：同步传输
+	序列化：JDK标准二进制序列化
+	使用范围：传入传出数据包比较大，消费者和提供者个数差不多，可传文件
+	使用场景：常规远程服务方法调用，与原生的RMI服务互操作
+
+	hessian://
+	默认使用jetty做服务器
+		<dubbo:protocol name="hessian" port="8080" server="jetty" />
+
+	连接个数：多链接
+	链接方式：短连接
+	传输协议：HTTP
+	传输方式：同步传输
+	序列化：Hession二进制序列化
+	使用范围：传入传出数据包比较小（建议小于100k），消费者比提供者少，提供者压力较大，可传文件
+	使用场景：页面传输，文件传输，与原生hessian服务互操作
+
+	依赖
+	<dependency>
+		<groupId>com.caucho</groupId>
+		<artifactId>hessian</artifactId>
+		<version>4.0.7</version>
+	</dependency>
+
+	web.xml配置：如果使用server="servlet"需要配置：
+		<servlet>  
+	         <servlet-name>dubbo</servlet-name>  
+	         <servlet-class>com.alibaba.dubbo.remoting.http.servlet.DispatcherServlet</servlet-class>  
+	         <load-on-startup>1</load-on-startup>  
+		</servlet>  
+		<servlet-mapping>  
+		         <servlet-name>dubbo</servlet-name>  
+		         <url-pattern>/*</url-pattern>  
+		</servlet-mapping>  
+
+    其他参考
+
+	参考
+	https://www.cnblogs.com/yangzhilong/p/6121551.html
+	http://blog.csdn.net/tanga842428/article/details/52717217
+
+
+
+
+spring配置多配置文件
+pom中+profiles的支持
+
+
+统一用户验证ldap
+
+
+
+AB测试
+
+
+链接Mongodb
+	需要spring-data-mongodb
+
+	实体类需要注解@Document(collection="表名")
+	字段上： @Field(“字段名”)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
